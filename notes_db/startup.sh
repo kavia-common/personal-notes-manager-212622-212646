@@ -7,15 +7,26 @@ DB_PORT="5000"
 
 echo "Starting MySQL setup..."
 
+# Helper: run a query against MySQL via socket
+run_mysql_socket() {
+  sudo mysql --socket=/var/run/mysqld/mysqld.sock -N -B -e "$1"
+}
+
 # Check if MySQL is already running on the specified port
 if sudo mysqladmin ping --socket=/var/run/mysqld/mysqld.sock --silent 2>/dev/null; then
     echo "MySQL is already running!"
     
-    # Try to verify the database exists
-    if sudo mysql --socket=/var/run/mysqld/mysqld.sock -e "USE ${DB_NAME};" 2>/dev/null; then
-        echo "Database ${DB_NAME} is accessible."
+    # Ensure database exists and apply migrations idempotently
+    echo "Ensuring database ${DB_NAME} exists and applying migrations..."
+    run_mysql_socket "CREATE DATABASE IF NOT EXISTS ${DB_NAME};"
+    if [ -d "migrations" ]; then
+      for f in migrations/*.sql; do
+        [ -e "$f" ] || continue
+        echo "Applying migration: $f"
+        sudo mysql --socket=/var/run/mysqld/mysqld.sock "${DB_NAME}" < "$f"
+      done
     fi
-    
+
     echo ""
     echo "Database: ${DB_NAME}"
     echo "Root user: root (password: ${DB_PASSWORD})"
@@ -107,6 +118,18 @@ GRANT ALL PRIVILEGES ON ${DB_NAME}.* TO 'root'@'localhost';
 
 FLUSH PRIVILEGES;
 EOF
+
+# Apply migrations idempotently (each file should be safe to re-run)
+echo "Applying database migrations..."
+if [ -d "migrations" ]; then
+  for f in migrations/*.sql; do
+    [ -e "$f" ] || continue
+    echo "Applying migration: $f"
+    sudo mysql --socket=/var/run/mysqld/mysqld.sock "${DB_NAME}" < "$f"
+  done
+else
+  echo "No migrations directory found, skipping."
+fi
 
 # Save connection command to a file
 echo "mysql -u ${DB_USER} -p${DB_PASSWORD} -h localhost -P ${DB_PORT} ${DB_NAME}" > db_connection.txt
